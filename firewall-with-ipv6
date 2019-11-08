@@ -1,0 +1,271 @@
+#!/bin/bash
+
+#Thiago Branco Meurer
+# <thiago@thiagopriest.net>
+#SSE/RCOM - Sistema de Segurança Empresarial em Redes de Computadores
+#FIREWALL - IPtables (DMZ, IPv6, QoS)
+#Última modificação = 22/11/2010
+
+#/etc/init.d/bind9 restart
+/etc/init.d/squid restart
+
+# Carrega módulos
+/sbin/modprobe iptable_nat
+/sbin/modprobe ip_conntrack
+/sbin/modprobe ip_conntrack_ftp
+/sbin/modprobe ip_nat_ftp
+/sbin/modprobe ipt_LOG
+/sbin/modprobe ipt_REJECT
+/sbin/modprobe ipt_MASQUERADE
+
+# Habilita Roteamento a nivel de Kernel
+echo 1 >/proc/sys/net/ipv4/ip_forward
+
+# Proteção contra Spoofing
+echo "1" > /proc/sys/net/ipv4/conf/all/rp_filter
+
+# Protecao Contra Soofing 2
+echo 0 > /proc/sys/net/ipv4/conf/all/accept_source_route
+echo 1 > /proc/sys/net/ipv4/tcp_syncookies
+echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_broadcasts
+echo 1 > /proc/sys/net/ipv4/icmp_ignore_bogus_error_responses
+
+# Limpa as Tabelas Existentes
+iptables -F
+iptables -t mangle -F
+iptables -t nat -F
+iptables -X
+
+# Política Padrão
+iptables -P INPUT DROP
+iptables -P OUTPUT ACCEPT
+iptables -P FORWARD DROP
+
+# Conexões Pré Estabelecidas
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A OUTPUT -m state --state ESTABLISHED,RELATED,NEW -j ACCEPT
+iptables -A FORWARD -m state --state ESTABLISHED,RELATED,NEW -j ACCEPT
+
+# Libera Interface Loopback
+iptables -A INPUT -i lo -j ACCEPT
+
+# Registro de Logs
+iptables -A INPUT -p tcp --dport 333 --syn -j LOG --log-prefix="[TENTATIVA ACESSO FWLOGWATCH]"
+iptables -A INPUT -p tcp --dport 23 --syn -j LOG --log-prefix="[TENTATIVA ACESSO TELNET]"
+iptables -A INPUT -p tcp --dport 10000 --syn -j LOG --log-prefix="[TENTATIVA ACESSO WEBMIN]"
+iptables -A FORWARD -m multiport -p tcp --dport 5800,5900,6000 -j LOG --log-prefix="[ACESSO VNC]"
+iptables -A INPUT -p tcp --dport 22 --syn -j LOG --log-prefix="[TENTATIVA ACESSO SSH]"
+iptables -A INPUT -p tcp --dport 2222 --syn -j LOG --log-prefix="[TENTATIVA ACESSO SSH]"
+iptables -A INPUT -p tcp --dport 21 --syn -j LOG --log-prefix="[TENTATIVA ACESSO FTP]"
+
+################################################################################ 
+#                           REGRAS DE SEGURANÇA                                #          
+################################################################################
+
+# Protege Contra Port Scanners
+iptables -A INPUT -p tcp --tcp-flags SYN,ACK,FIN,RST RST -m limit --limit 5/s -j ACCEPT
+
+# Proteção Contra Traceroute
+iptables -A INPUT -p udp -s 0/0 -i eth3 --dport 33435:33525 -j REJECT
+
+# Proteções Contra Pacotes Inválidos
+iptables -A INPUT -m state --state INVALID -j REJECT
+
+################################################################################ 
+#                           REGRAS PARA INPUT                                  #          
+################################################################################
+
+# Liberando Servidor DNS
+iptables -A INPUT -p tcp --dport 53 -j ACCEPT
+iptables -A INPUT -p udp --dport 53 -j ACCEPT
+
+# Libera Proxy Squid pelo Navegador
+iptables -A INPUT -s 192.168.0.0/24 -p tcp --dport 3128 -j ACCEPT
+iptables -A INPUT -s 192.168.1.0/24 -p tcp --dport 3128 -j ACCEPT
+iptables -A INPUT -s 192.168.2.0/24 -p tcp --dport 3128 -j ACCEPT
+iptables -A INPUT -s 192.168.3.0/24 -p tcp --dport 3128 -j ACCEPT
+iptables -A INPUT -s 192.168.4.0/24 -p tcp --dport 3128 -j ACCEPT
+
+#Exemplos de Uso
+
+# Libera Ping para Rede do Piso 1
+iptables -A INPUT -s 192.168.1.0/24 -p icmp --icmp-type 8 -j ACCEPT
+
+# Libera SSH para Piso 1 e Bloqueia todo o Resto
+#iptables -A INPUT -s 192.168.1.0/24 -p tcp --dport 22 -j ACCEPT
+
+# Libera SSH Externamente
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+
+# Libera Acesso ao WEBMIN para o piso 1
+iptables -A INPUT -p tcp --dport 10000 -j ACCEPT
+
+# Libera Acesso ao fwlogwatch para o Piso 1
+iptables -A INPUT -s 192.168.1.0/24 -p tcp --dport 333 -j ACCEPT
+
+# Bloqueia TODO o Resto
+iptables -A INPUT -p tcp --syn -j DROP
+iptables -A INPUT -p tcp -j DROP
+
+
+################################################################################ 
+#                           REGRAS VLANS e DMZ (FORWARD)                       #
+################################################################################
+
+# Libera Portas ctvoicer
+iptables -A FORWARD -d 192.168.0.8/24 -p tcp -m multiport --dport 3050,10014,10010 -j ACCEPT
+
+# Liberado Ping para Rede Piso 1 (qualquer destino)
+# iptables -A FORWARD -s 192.168.1.0/24 -p icmp --icmp-type echo-request -j ACCEPT
+# iptables -A FORWARD -s 192.168.1.0/24 -p icmp --icmp-type echo-reply -j ACCEPT
+
+# Libera Portas Rede Piso 1
+iptables -A FORWARD -i eth0.10 -p tcp -m multiport --dport 53,137,138,139,110,25,22,2222,995,465,5800,5900,6000 -j ACCEPT
+iptables -A FORWARD -i eth0.10 -p udp -m multiport --dport 53,137,138,139,110,25,22,995,465 -j ACCEPT
+
+# Regras Para o Webserver
+iptables -A FORWARD -d 192.168.0.253/24 -p tcp -m multiport --dport 80,8080 -j ACCEPT
+iptables -A FORWARD -d 192.168.0.253/24 -p udp -m multiport --dport 80,8080 -j ACCEPT
+iptables -A FORWARD -s 192.168.1.0/24 -d 192.168.1.0/24 -p tcp -m multiport --dport 137,138,139 -j ACCEPT
+iptables -A FORWARD -s 192.168.1.0/24 -d 192.168.1.0/24 -p udp -m multiport --dport 137,138,139 -j ACCEPT
+
+# Regras para Servidor de Email
+iptables -A FORWARD -d 192.168.0.254/24 -p tcp -m multiport --dport 995,465,110,25,143 -j ACCEPT
+iptables -A FORWARD -d 192.168.0.254/24 -p udp -m multiport --dport 995,465,110,25,143 -j ACCEPT
+
+# Regras para o Asterisk
+# iptables -A FORWARD -d 192.168.0.250/24 -p tcp --dport 5060 -j ACCEPT
+# iptables -A FORWARD -d 192.168.0.250/24 -p udp --dport 5060 -j ACCEPT
+# iptables -A FORWARD -d 192.168.0.250/24 -p udp --dport 10000:20000 -j ACCEPT
+
+# Regras Para Servidor Samba
+iptables -A FORWARD -i eth0 -d 192.168.0.127/24 -p tcp -m multiport --dport 137,138,139 -j ACCEPT
+iptables -A FORWARD -i eth0 -d 192.168.0.127/24 -p udp -m multiport --dport 137,138,139 -j ACCEPT
+
+# Regras para Servidor-adm2
+iptables -A FORWARD -d 192.168.0.252/24 -p tcp --dport 3389 -j ACCEPT
+iptables -A FORWARD -d 192.168.0.252/24 -p udp --dport 3389 -j ACCEPT
+
+# Regras de forward para VNC piso 1
+iptables -A FORWARD -s 192.168.1.0/24 -p tcp -m multiport --dport 5800,5900,6000 -j ACCEPT
+
+################################################################################ 
+#                           REGRAS PARA NAT                                    #
+################################################################################
+
+# Redirecionando Acesso ao Servidor VOIP
+# iptables -t nat -A PREROUTING -d 200.195.YYY.YYY -j DNAT --to 192.168.0.250
+
+# Redirecionado POP e SMTP
+iptables -t nat -A PREROUTING -d 200.195.ZZZ.ZZZ -p tcp -m tcp --dport 110 -j DNAT --to-destination 192.168.0.254:110
+iptables -t nat -A PREROUTING -d 200.195.ZZZ.ZZZ -p tcp -m tcp --dport 25 -j DNAT --to-destination 192.168.0.254:25
+
+# Redirecionando Acesso ao Servidor Web via LAN e INTERNET
+iptables -t nat -A PREROUTING -s 200.195.KKK.KKK -p tcp --dport 80 -j DNAT --to 192.168.0.253
+
+# Redireciona Acesso Terminal Service para Serv-ADM
+iptables -t nat -A PREROUTING -d 200.195.ZZZ.ZZZ -p tcp --dport 3389 -j DNAT --to 192.168.0.252
+
+# Redireciona Acesso VNC
+iptables -t nat -A PREROUTING -d 200.139.XXX.XXX -p tcp --dport 5900 -j DNAT --to 192.168.0.8
+
+# Ativando Proxy Transparente
+iptables -t nat -A PREROUTING -p tcp -s 192.168.0.0/24 --dport 80 -j REDIRECT --to-ports 3128
+
+# Ativando Masquerade
+iptables -t nat -A POSTROUTING -p all -s 192.168.1.2 -o eth3 -j SNAT --to-source 200.139.XXX.XXX
+
+# Ativando SNAT
+iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -m multiport -p tcp --dport 53,110,25,22,2222,995,465,5800,5900,6000 -o eth3 -j SNAT --to-source 200.139.XXX.XXX
+iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -m multiport -p udp --dport 53,110,25,22,995,465 -j SNAT --to-source 200.139.XXX.XXX
+iptables -t nat -A POSTROUTING -s 192.168.1.0/24 -p icmp -o eth3 -j SNAT --to-source 200.139.XXX.XXX
+
+################################################################################ 
+#                                 IPv6                                         #
+################################################################################
+#                            Suporte a IPv6                                    #
+################################################################################
+
+IPT6="/sbin/ip6tables" 
+PUBIF="eth0" 
+echo "Iniciando o Firewall com suporte a IPv6" 
+$IPT6 -F 
+$IPT6 -X 
+$IPT6 -t mangle -F 
+$IPT6 -t mangle -X 
+#acesso ilimitado a loopback 
+$IPT6 -A INPUT -i lo -j ACCEPT 
+$IPT6 -A OUTPUT -o lo -j ACCEPT 
+# Politica padrão e DROP 
+$IPT6 -P INPUT DROP 
+$IPT6 -P OUTPUT DROP 
+$IPT6 -P FORWARD DROP 
+
+# Permite todas as conexões estabilizadas da rede interna para a Internet, 
+# mas não o contrario. 
+
+$IPT6 -A OUTPUT -o $PUBIF -m state --state NEW,ESTABLISHED,RELATED -j ACCEPT 
+$IPT6 -A INPUT -i $PUBIF -m state --state ESTABLISHED,RELATED -j ACCEPT 
+
+# Liberando ping 
+$IPT6 -A INPUT -i $PUBIF -p ipv6-icmp -j ACCEPT 
+$IPT6 -A OUTPUT -o $PUBIF -p ipv6-icmp -j ACCEPT 
+
+################################################################################ 
+#              REGRAS PERSONALIZADAS - ADICIONADAS AQUI                        #
+################################################################################
+
+### Abrir porta 80 para IPv6 
+#$IPT6 -A INPUT -i $PUBIF -p tcp --destination-port 80 -j ACCEPT 
+
+### Abrir porta 22 para IPv6 
+#$IPT6 -A INPUT -i $PUBIF -p tcp --destination-port 22 -j ACCEPT 
+
+### Abrir porta 25 para IPv6 
+#$IPT6 -A INPUT -i $PUBIF -p tcp --destination-port 25 -j ACCEPT 
+
+################################################################################ 
+#                   FIM REGRAS PERSONALIZADAS                                  #
+################################################################################
+
+# Logar todos os outros pacotes que nao satisfacam as regras acima 
+$IPT6 -A INPUT -i $PUBIF -j LOG 
+$IPT6 -A INPUT -i $PUBIF -j DROP
+
+################################################################################ 
+#                           QUALIDADE DE SERVIÇO                               #
+################################################################################
+#                        Priorizando Pacotes da Rede                           #
+################################################################################
+
+iptables -t mangle -A PREROUTING -p tcp --dport 5060 -j TOS --set-tos 16
+iptables -t mangle -A PREROUTING -p udp --dport 1000:20000 -j TOS --set-tos 8
+iptables -t mangle -A PREROUTING -p tcp --dport 80 -j TOS --set-tos 8
+iptables -t mangle -A PREROUTING -p udp --dport 80 -j TOS --set-tos 8
+iptables -t mangle -A OUTPUT -o eth3 -p tcp --dport 5060 -j TOS --set-tos 16
+iptables -t mangle -A OUTPUT -o eth3 -p udp --dport 10000:20000 -j TOS --set-tos 8
+iptables -t mangle -A OUTPUT -o eth3 -p tcp --dport 80 -j TOS --set-tos 8
+iptables -t mangle -A OUTPUT -o eth3 -p udp --dport 80 -j TOS --set-tos 8
+
+
+################################################################################ 
+#              Balanceamento de Links Realizado por Serviços                   #
+################################################################################
+#                        OBS: IMPLEMENTAÇÃO ADICIONAL                          #
+################################################################################
+
+# echo 10 link1 >>/etc/iproute2/rt_tables
+# echo 20 link2 >>/etc/iproute2/rt_tables
+
+# iptables -t mangle -A PREROUTING -p tcp --dport 443 -j MARK --set-mark 3
+# iptables -t mangle -A PREROUTING -p tcp --dport 80 -j MARK --set-mark 3
+# iptables -t mangle -A PREROUTING -p tcp --dport 5060 -j MARK --set-mark 3
+# iptables -t mangle -A PREROUTING -p tcp --dport 21 -j MARK --set-mark 4
+# iptables -t mangle -A PREROUTING -p tcp --dport 25 -j MARK --set-mark 4
+# iptables -t mangle -A PREROUTING -p tcp --dport 110 -j MARK --set-mark 4
+# iptables -t mangle -A PREROUTING -p tcp --dport 5800:6000 -j MARK --set-mark 4
+# iptables -t mangle -A PREROUTING -p tcp --dport 3306 -j MARK --set-mark 4
+# ip rule add fwmark 3 table link1
+# ip rule add fwmark 4 table link2
+# ip route add default via XXX.XXX.XXX.XXX table link1
+# ip route add default via XXX.XXX.XXX.XXX table link2
